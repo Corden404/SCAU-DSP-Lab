@@ -1,82 +1,93 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
-from scipy.ndimage import gaussian_filter, median_filter
+from scipy.ndimage import gaussian_filter
 
-# 1. 准备图片
-img_pil = Image.open('exp1/skin-smoothing_demo/test_img.jpg').convert('L')
-img = np.array(img_pil).astype(float) / 255.0
+def load_image(path, size=None):
+    """读取图片并归一化"""
+    img = Image.open(path).convert('L')
+    if size:
+        img = img.resize(size, Image.Resampling.LANCZOS)
+    return np.array(img).astype(float) / 255.0
 
-# 步骤 1: 频率分离
-# Sigma=0.8: 此时低频层痘痘清晰，高频层很干净
-split_sigma = 0.8
-img_low = gaussian_filter(img, sigma=split_sigma)
-img_high = img - img_low
+# 1. 准备数据
+img_path = 'exp1/skin-smoothing_demo/test_img.jpg'
+mask_path = 'exp1/skin-smoothing_demo/mask.png'
 
-# 步骤 2: 加载手动蒙版
+# 加载原图
+img = load_image(img_path)
+h, w = img.shape
+
+# 加载蒙版
 try:
-    # 尝试加载手动绘制的蒙版
-    mask_pil = Image.open('exp1/skin-smoothing_demo/mask.png').convert('L')
-    
-    # 强制调整蒙版尺寸以匹配原图。我提供的示例蒙版尺寸是 512x512，理论上与输入图像一致。
-    if mask_pil.size != img_pil.size:
-        print(f"蒙版尺寸 {mask_pil.size} 与原图 {img_pil.size} 不一致，已自动缩放。")
-        mask_pil = mask_pil.resize(img_pil.size, Image.Resampling.LANCZOS)
-    
+    mask_pil = Image.open(mask_path).convert('L').resize((w, h))
     mask = np.array(mask_pil).astype(float) / 255.0
-
 except FileNotFoundError:
-    print("未找到 'exp1/skin-smoothing_demo/mask.png'")
-    mask = np.zeros_like(img)
+    print("未找到蒙版文件，请检查路径。")
+    mask = np.ones_like(img) # 如果没蒙版，全白(不处理)
 
-# 对蒙版做一点轻微的高斯模糊，保证黑白交界处过渡自然
-mask_soft = gaussian_filter(mask, sigma=2.0)
+# 蒙版柔化：虽然蒙版是精准的，但在像素级别上，稍微一点点羽化(sigma=1.0)能让修补的边缘完全融合，看不出拼接痕迹
+mask_soft = gaussian_filter(mask, sigma=1.5)
 
-# 步骤 3: 对低频层进行选择性磨皮
-# 1. 生成磨皮层
-# 既然有蒙版保护五官，可以放心大胆地用大核磨皮
-img_low_retouched_base = median_filter(img_low, size=30) 
+# 参数设置
+# sigma_texture (小)
+sigma_texture = 0.8
 
-# 2. 融合：
-# mask=1 (白色/五官) -> 使用原始 img_low (清晰)
-# mask=0 (黑色/皮肤) -> 使用 img_low_retouched_base (磨皮)
-img_low_final = img_low * mask_soft + img_low_retouched_base * (1 - mask_soft)
+# sigma_structure (大)
+sigma_structure = 8.0
 
-# 步骤 4: 合成
-img_restored = img_low_final + img_high
+# 提取纯净的高频纹理
+blur_small = gaussian_filter(img, sigma=sigma_texture)
+img_high = img - blur_small
 
-# 步骤 5:可视化
-plt.figure(figsize=(14, 8))
+# 提取平滑的低频轮廓
+img_low = gaussian_filter(img, sigma=sigma_structure)
 
+# 合成Patch = 高频 + 低频
+img_patch = img_high + img_low
+
+# 蒙版融合
+img_final = img * mask_soft + img_patch * (1 - mask_soft)
+
+# 3. 可视化展示
+plt.figure(figsize=(18, 10))
+
+# 1. 原图
 plt.subplot(2, 3, 1)
-plt.imshow(img_low, cmap='gray')
-plt.title(f'Original Low Freq (Sigma={split_sigma})')
+plt.imshow(img, cmap='gray')
+plt.title('Original Image')
 plt.axis('off')
 
+# 2. 蒙版
 plt.subplot(2, 3, 2)
-plt.imshow(img_high, cmap='gray')
-plt.title('High Freq (Texture Only)')
+plt.imshow(mask, cmap='gray')
+plt.title('Manual Mask\n(Black = Acne Spots)')
 plt.axis('off')
 
+# 3. 高频层 (纹理)
 plt.subplot(2, 3, 3)
-plt.imshow(mask_soft, cmap='gray')
-plt.title('Manual Mask\n(White=Keep Sharp, Black=Smooth)')
+plt.imshow(img_high, cmap='gray')
+plt.title(f'High Freq (Texture)\n$\sigma$={sigma_texture}')
 plt.axis('off')
 
+# 4. 低频层 (结构)
 plt.subplot(2, 3, 4)
-plt.imshow(img_low_retouched_base, cmap='gray')
-plt.title('Heavy Blur Low Freq')
+plt.imshow(img_low, cmap='gray')
+plt.title(f'Low Freq (Structure)\n$\sigma$={sigma_structure}')
 plt.axis('off')
 
+# 5. 补丁图
 plt.subplot(2, 3, 5)
-plt.imshow(img_low_final, cmap='gray')
-plt.title('Masked Low Freq')
+plt.imshow(img_patch, cmap='gray')
+plt.title('Synthesized Patch\n(High + Low)')
 plt.axis('off')
 
+# 6. 最终结果
 plt.subplot(2, 3, 6)
-plt.imshow(img_restored, cmap='gray')
-plt.title('Final Result')
+plt.imshow(img_final, cmap='gray')
+plt.title('Final Result\n(Band-Stop Filtered)')
 plt.axis('off')
 
 plt.tight_layout()
 plt.savefig('exp1/skin-smoothing_demo/skin_smoothing_result.png', dpi=300)
+plt.show()
